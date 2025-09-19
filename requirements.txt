@@ -1,0 +1,5 @@
+selenium>=4.25.0
+beautifulsoup4
+lxml
+requests
+webdriver-manager
