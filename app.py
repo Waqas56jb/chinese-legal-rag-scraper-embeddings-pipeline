@@ -34,7 +34,21 @@ URLS = [
     {"Category": "Community/Portals", "Name": "OpenLaw.cn", "URL": "http://www.openlaw.cn/"},
     {"Category": "Templates", "Name": "Findlaw China (templates)", "URL": "https://china.findlaw.cn/fanben/"},
     {"Category": "Templates", "Name": "Lawtime Templates", "URL": "https://fanben.lawtime.cn/"},
-    {"Category": "Academic", "Name": "Stanford China Guiding Cases", "URL": "https://law.stanford.edu/china-guiding-cases-project/"}
+    {"Category": "Academic", "Name": "Stanford China Guiding Cases", "URL": "https://law.stanford.edu/china-guiding-cases-project/"},
+    {"Category": "Courts (judgments)", "Name": "China Judgments Online (Wenshu)", "URL": "http://wenshu.court.gov.cn/"},
+    {"Category": "Courts (cases)", "Name": "People’s Courts Case DB (rmfyalk)", "URL": "http://rmfyalk.court.gov.cn/"},
+    {"Category": "Registry", "Name": "GSXT (Enterprise Credit System)", "URL": "http://www.gsxt.gov.cn/"},
+    {"Category": "Commercial DB", "Name": "PKULaw (北大法宝)", "URL": "https://www.pkulaw.cn/"},
+    {"Category": "Commercial DB", "Name": "Lawyee (法信)", "URL": "https://www.lawyee.net/"},
+    {"Category": "Academic DB", "Name": "CNKI", "URL": "https://www.cnki.net/"},
+    {"Category": "Commercial DB", "Name": "Westlaw China", "URL": "https://www.westlawchina.com/"},
+    {"Category": "Commercial DB", "Name": "LexisNexis China", "URL": "https://www.lexisnexis.com.cn/"},
+    {"Category": "Translations", "Name": "LawinfoChina", "URL": "http://www.lawinfochina.com/"},
+    {"Category": "User docs", "Name": "Baidu Wenku", "URL": "https://wenku.baidu.com/"},
+    {"Category": "User docs", "Name": "Docin", "URL": "https://www.docin.com/"},
+    {"Category": "Templates", "Name": "LegalTemplates.net", "URL": "https://legaltemplates.net/"},
+    {"Category": "Primary", "Name": "China Court Trial Online", "URL": "http://tingshen.court.gov.cn"},
+    {"Category": "Primary", "Name": "Peking Univ Law (chinalawinfo)", "URL": "https://www.chinalawinfo.com"}
 ]
 
 OUTPUT_DIR = "scraped_json"
