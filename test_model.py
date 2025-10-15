@@ -120,7 +120,6 @@ def generate_text(model: nn.Module, vocab: Dict[str, int], prompt: str, max_leng
     output_ids = x[0].tolist()
     return decode(output_ids, vocab)
 
-
 def main():
     print("Loading best trained model...")
     model, vocab, model_type = load_best_model()
@@ -133,11 +132,10 @@ def main():
     # Test prompts in Chinese
     test_prompts = [
         # here is 5 differnt questions for testing
-        "中华人民共和国",
-        "市场监管总局",
-        "法律法规",
-        "商务发展",
-        "国家政策"
+    "王军的行为是否符合中国刑法关于盗窃罪的构成要件",
+    "根据《刑法》第二百六十四条，本案适用的量刑幅度是什么",
+    "王军主动认罪并退还赃物，是否应当对量刑产生影响？",
+   "你对此案的法律意见或推荐的处理结果是什么"
     ]
     
     print("\n=== Text Generation Tests ===")
