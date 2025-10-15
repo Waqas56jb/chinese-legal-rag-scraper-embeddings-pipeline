@@ -193,8 +193,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Mount static files
-app.mount("/static", StaticFiles(directory="static"), name="static")
+# Mount static files only if present to avoid crashes in minimal builds
+if os.path.isdir("static"):
+    app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.on_event("startup")
 async def startup_event():
@@ -215,8 +216,11 @@ async def startup_event():
 
 @app.get("/")
 async def root():
-    """Serve the chatbot interface"""
-    return FileResponse("static/index.html")
+    """Serve the chatbot interface if available, else simple JSON"""
+    index_path = os.path.join("static", "index.html")
+    if os.path.isfile(index_path):
+        return FileResponse(index_path)
+    return {"message": "Chinese Legal RAG API", "docs": "/docs", "health": "/health"}
 
 @app.get("/api", response_model=dict)
 async def api_info():

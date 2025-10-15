@@ -8,9 +8,6 @@ venv/
 *.pyo
 *.pyd
 *.log
-static
-static/
-**/static/**
 *.sqlite3
 *.db
 node_modules/
@@ -29,5 +26,5 @@ outputs_seq_models/**/loss_curve.png
 outputs_seq_models/**/metrics.json
 outputs_seq_models/kfold_all_scores.json
 scraped_json/
-static/
+
 
