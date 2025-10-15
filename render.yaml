@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: chinese-legal-rag-api
+    env: docker
+    plan: free
+    autoDeploy: true
+    region: oregon
+    healthCheckPath: /health
+    
+    # Render will build using the Dockerfile at repo root by default
+    dockerfilePath: ./Dockerfile
+    
+    # Render automatically sets PORT; our Dockerfile respects ${PORT}
+    envVars:
+      - key: PORT
+        value: 8080
+    
+    # Increase default start/health timeouts due to heavy deps (torch)
+    startCommand: ""
+    
+    # Optional: set request/response timeouts if needed
+    # runtime:
+    #   cpuThreshold: 80
+    
+    # Route static root to docs, optional (app serves /)
+    routes:
+      - type: rewrite
+        source: "/"
+        destination: "/"
+
+
