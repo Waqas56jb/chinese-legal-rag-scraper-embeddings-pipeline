@@ -23,8 +23,6 @@ urls
 outputs_seq_models/**/*.png
 dataset/analytics/
 outputs_seq_models/**/loss_curve.png
-outputs_seq_models/**/metrics.json
-outputs_seq_models/kfold_all_scores.json
 scraped_json/
 
 
