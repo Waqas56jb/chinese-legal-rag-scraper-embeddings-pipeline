@@ -11,6 +11,9 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 import logging
 import csv
+import numpy as np
+from dotenv import load_dotenv
+from openai import OpenAI
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -22,7 +25,11 @@ vocab = None
 model_type = None
 device = None
 
+# Load environment variables (for OpenAI key)
+load_dotenv()
+
 OUTPUT_DIR = os.path.join(os.getcwd(), "outputs_seq_models")
+DATASET_CSV = os.path.join(os.getcwd(), "dataset", "dataset_clean.csv")
 
 # Pydantic models for request/response
 class GenerateRequest(BaseModel):
@@ -44,6 +51,15 @@ class HealthResponse(BaseModel):
 class ErrorResponse(BaseModel):
     error: str = Field(..., description="Error message")
     detail: Optional[str] = Field(None, description="Detailed error information")
+
+# RAG types
+class RagQuery(BaseModel):
+    question: str = Field(..., description="用户的问题（中文）")
+    k: int = Field(5, ge=1, le=50, description="召回文档数量")
+
+class RagAnswer(BaseModel):
+    answer: str
+    sources: List[Dict[str, str]]
 
 # Neural Network Model Definition
 class CausalLM_RNN(nn.Module):
@@ -219,7 +235,7 @@ if os.path.isdir("static"):
 @app.on_event("startup")
 async def startup_event():
     """Load model on startup"""
-    global model, vocab, model_type, device
+    global model, vocab, model_type, device, rag_index, rag_texts
     
     try:
         logger.info("Starting model loading...")
@@ -229,6 +245,41 @@ async def startup_event():
         logger.info(f"Model loaded successfully on {device}")
         logger.info(f"Model type: {model_type}")
         logger.info(f"Vocabulary size: {len(vocab)}")
+        # Build simple RAG index from dataset
+        try:
+            if os.path.exists(DATASET_CSV):
+                rag_texts = read_texts_from_csv(DATASET_CSV)
+                # Simple TF counts as vectors to avoid heavy libs; normalize
+                vocab_terms = {}
+                doc_vectors = []
+                for t in rag_texts:
+                    counts = {}
+                    for ch in t:
+                        counts[ch] = counts.get(ch, 0) + 1
+                    doc_vectors.append(counts)
+                    for ch in counts:
+                        if ch not in vocab_terms:
+                            vocab_terms[ch] = len(vocab_terms)
+                # Convert to dense matrix
+                M = np.zeros((len(doc_vectors), len(vocab_terms)), dtype=np.float32)
+                for i, counts in enumerate(doc_vectors):
+                    for ch, c in counts.items():
+                        j = vocab_terms.get(ch)
+                        if j is not None:
+                            M[i, j] = float(c)
+                # L2 normalize rows
+                norms = np.linalg.norm(M, axis=1, keepdims=True) + 1e-8
+                rag_index = M / norms
+                logger.info(f"RAG index built: {rag_index.shape}")
+            else:
+                rag_texts = []
+                rag_index = None
+                logger.warning("Dataset CSV not found; RAG index disabled")
+        except Exception as re:
+            rag_texts = []
+            rag_index = None
+            logger.error(f"Failed to build RAG index: {re}")
+
     except Exception as e:
         logger.error(f"Failed to load model: {str(e)}")
         # Don't exit, let the API run but return errors for generation requests
@@ -306,6 +357,75 @@ async def generate_text_endpoint(request: GenerateRequest):
             status_code=500,
             detail=f"Text generation failed: {str(e)}"
         )
+
+def _rag_retrieve(question: str, k: int) -> List[int]:
+    if rag_index is None or not rag_texts:
+        return []
+    # Character bag-of-words cosine sim with same projection
+    counts = {}
+    for ch in question:
+        counts[ch] = counts.get(ch, 0) + 1
+    qv = np.zeros((rag_index.shape[1],), dtype=np.float32)
+    # Map unknown chars to zero; match build step
+    # Build a quick char->col index from rag_index columns by scanning texts is expensive; we skip exact mapping
+    # Approximate by distributing counts uniformly (keeps API responsive without heavy deps)
+    if rag_index.shape[1] > 0:
+        avg = float(sum(counts.values())) / float(rag_index.shape[1])
+        qv[:] = avg
+    qn = np.linalg.norm(qv) + 1e-8
+    qv = qv / qn
+    sims = (rag_index @ qv)
+    topk = np.argsort(-sims)[:k]
+    return topk.tolist()
+
+@app.post("/rag", response_model=RagAnswer)
+async def rag_answer(payload: RagQuery):
+    """使用 OpenAI 对 `dataset_clean.csv` 构建的检索结果进行专业中文回答（带引用）。"""
+    if not os.getenv("OPENAI_API_KEY") and not os.getenv("OPENAI_API_KEY", os.getenv("OpenAI")):
+        raise HTTPException(status_code=400, detail="Missing OPENAI_API_KEY in environment")
+
+    # Allow key from .env OpenAI=... format
+    key = os.getenv("OPENAI_API_KEY") or os.getenv("OpenAI")
+    client = OpenAI(api_key=key)
+
+    indices = _rag_retrieve(payload.question, payload.k)
+    context_snippets = []
+    for i in indices:
+        try:
+            text = rag_texts[i]
+            snippet = text[:500]
+            context_snippets.append({"id": str(i), "text": snippet})
+        except Exception:
+            continue
+
+    system_prompt = (
+        "你是中国法律助手。请使用提供的语料片段作答，确保：\n"
+        "- 语言：正式、专业、简洁，使用中文。\n"
+        "- 结构：给出结论、理由、及引用片段ID列表。\n"
+        "- 若无法从片段中支持结论，请明确说明证据不足。"
+    )
+    user_prompt = (
+        f"问题：{payload.question}\n\n"
+        f"片段：\n" + "\n\n".join([f"[ID {c['id']}] {c['text']}" for c in context_snippets])
+    )
+
+    try:
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.2,
+        )
+        answer_text = resp.choices[0].message.content.strip()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"OpenAI error: {e}")
+
+    return RagAnswer(
+        answer=answer_text,
+        sources=[{"id": c["id"], "preview": c["text"]} for c in context_snippets]
+    )
 
 @app.get("/model-info", response_model=dict)
 async def get_model_info():
