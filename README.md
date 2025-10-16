@@ -28,6 +28,7 @@ python -m venv .venv
 
 ```bash
 pip install -r requirements.txt
+cp .env.example .env  # then edit and set OPENAI_API_KEY
 ```
 
 3) Run the scraper (headless Chrome)

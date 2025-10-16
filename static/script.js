@@ -177,14 +177,14 @@ async function sendMessage() {
     
     try {
         // Call API
-        const response = await fetch(`${API_BASE}/generate`, {
+        const response = await fetch(`${API_BASE}/answer`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-                prompt: message,
-                max_length: parseInt(maxLengthSlider.value)
+                question: message,
+                max_context_rows: 1000
             })
         });
         
@@ -195,7 +195,7 @@ async function sendMessage() {
         
         if (response.ok) {
             // Add assistant response
-            const assistantMessage = data.generated_text || '抱歉，我无法生成回复。';
+            const assistantMessage = data.answer || data.generated_text || '抱歉，我无法生成回复。';
             
             if (showTypingCheckbox.checked) {
                 await addMessageWithTyping('assistant', assistantMessage);

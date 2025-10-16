@@ -66,6 +66,15 @@ class RagAnswer(BaseModel):
     sources: List[Dict[str, str]]
     retrieved: int = 0
 
+# Simple prompt-based answering (no vector DB) input model
+class AnswerQuery(BaseModel):
+    question: str = Field(..., description="中文问题")
+    max_context_rows: int = Field(1000, ge=1, le=10000, description="从CSV取前N行拼接为上下文")
+
+class AnswerResponse(BaseModel):
+    question: str
+    answer: str
+
 # Neural Network Model Definition
 class CausalLM_RNN(nn.Module):
     def __init__(self, vocab_size: int, embed_dim: int, hidden_dim: int, rnn_type: str = "rnn"):
@@ -452,6 +461,43 @@ async def rag_answer(payload: RagQuery):
         sources=[{"id": c["id"], "preview": c["text"]} for c in context_snippets],
         retrieved=len(context_snippets),
     )
+
+@app.post("/answer", response_model=AnswerResponse)
+async def prompt_answer(payload: AnswerQuery):
+    """使用提供的 CSV 前若干行作为上下文，直接通过 OpenAI 生成专业中文回答。"""
+    key = os.getenv("OPENAI_API_KEY") or os.getenv("OpenAI")
+    if not key:
+        raise HTTPException(status_code=400, detail="Missing OPENAI_API_KEY in environment")
+    if not os.path.exists(DATASET_CSV):
+        raise HTTPException(status_code=500, detail="dataset_clean.csv not found")
+
+    client = OpenAI(api_key=key)
+
+    # 读取 CSV 的前 N 行并拼接成上下文（轻量方案，无向量库）
+    import pandas as pd
+    try:
+        df = pd.read_csv(DATASET_CSV, nrows=payload.max_context_rows)
+        context = " ".join(df.astype(str).values.flatten().tolist())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read dataset: {e}")
+
+    prompt = (
+        f"以下是一些资料：{context}\n\n"
+        f"问题：{payload.question}\n"
+        f"要求：请用正式、专业、简洁的中文回答，并尽量基于资料作答。"
+    )
+
+    try:
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+        )
+        answer_text = resp.choices[0].message.content.strip()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"OpenAI error: {e}")
+
+    return AnswerResponse(question=payload.question, answer=answer_text)
 
 @app.post("/rag/rebuild", response_model=dict)
 async def rag_rebuild():
