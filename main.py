@@ -30,6 +30,10 @@ load_dotenv()
 
 OUTPUT_DIR = os.path.join(os.getcwd(), "outputs_seq_models")
 DATASET_CSV = os.path.join(os.getcwd(), "dataset", "dataset_clean.csv")
+EMBED_MODEL = os.getenv("EMBED_MODEL", "text-embedding-3-small")
+RAG_MAX_DOCS = int(os.getenv("RAG_MAX_DOCS", "1500"))
+RAG_CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "500"))
+RAG_CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "50"))
 
 # Pydantic models for request/response
 class GenerateRequest(BaseModel):
@@ -60,6 +64,7 @@ class RagQuery(BaseModel):
 class RagAnswer(BaseModel):
     answer: str
     sources: List[Dict[str, str]]
+    retrieved: int = 0
 
 # Neural Network Model Definition
 class CausalLM_RNN(nn.Module):
@@ -245,40 +250,9 @@ async def startup_event():
         logger.info(f"Model loaded successfully on {device}")
         logger.info(f"Model type: {model_type}")
         logger.info(f"Vocabulary size: {len(vocab)}")
-        # Build simple RAG index from dataset
-        try:
-            if os.path.exists(DATASET_CSV):
-                rag_texts = read_texts_from_csv(DATASET_CSV)
-                # Simple TF counts as vectors to avoid heavy libs; normalize
-                vocab_terms = {}
-                doc_vectors = []
-                for t in rag_texts:
-                    counts = {}
-                    for ch in t:
-                        counts[ch] = counts.get(ch, 0) + 1
-                    doc_vectors.append(counts)
-                    for ch in counts:
-                        if ch not in vocab_terms:
-                            vocab_terms[ch] = len(vocab_terms)
-                # Convert to dense matrix
-                M = np.zeros((len(doc_vectors), len(vocab_terms)), dtype=np.float32)
-                for i, counts in enumerate(doc_vectors):
-                    for ch, c in counts.items():
-                        j = vocab_terms.get(ch)
-                        if j is not None:
-                            M[i, j] = float(c)
-                # L2 normalize rows
-                norms = np.linalg.norm(M, axis=1, keepdims=True) + 1e-8
-                rag_index = M / norms
-                logger.info(f"RAG index built: {rag_index.shape}")
-            else:
-                rag_texts = []
-                rag_index = None
-                logger.warning("Dataset CSV not found; RAG index disabled")
-        except Exception as re:
-            rag_texts = []
-            rag_index = None
-            logger.error(f"Failed to build RAG index: {re}")
+        # Initialize RAG containers (build on-demand via /rag/rebuild)
+        rag_texts = []
+        rag_index = None
 
     except Exception as e:
         logger.error(f"Failed to load model: {str(e)}")
@@ -361,52 +335,103 @@ async def generate_text_endpoint(request: GenerateRequest):
 def _rag_retrieve(question: str, k: int) -> List[int]:
     if rag_index is None or not rag_texts:
         return []
-    # Character bag-of-words cosine sim with same projection
-    counts = {}
-    for ch in question:
-        counts[ch] = counts.get(ch, 0) + 1
-    qv = np.zeros((rag_index.shape[1],), dtype=np.float32)
-    # Map unknown chars to zero; match build step
-    # Build a quick char->col index from rag_index columns by scanning texts is expensive; we skip exact mapping
-    # Approximate by distributing counts uniformly (keeps API responsive without heavy deps)
-    if rag_index.shape[1] > 0:
-        avg = float(sum(counts.values())) / float(rag_index.shape[1])
-        qv[:] = avg
+    key = os.getenv("OPENAI_API_KEY") or os.getenv("OpenAI")
+    if not key:
+        return []
+    client = OpenAI(api_key=key)
+    emb = client.embeddings.create(model=EMBED_MODEL, input=[question]).data[0].embedding
+    qv = np.asarray(emb, dtype=np.float32)
     qn = np.linalg.norm(qv) + 1e-8
     qv = qv / qn
-    sims = (rag_index @ qv)
+    sims = rag_index @ qv
     topk = np.argsort(-sims)[:k]
     return topk.tolist()
 
+def _chunk_text(text: str, chunk_size: int, overlap: int) -> List[str]:
+    chunks: List[str] = []
+    start = 0
+    n = len(text)
+    while start < n:
+        end = min(n, start + chunk_size)
+        chunk = text[start:end]
+        if chunk.strip():
+            chunks.append(chunk)
+        if end == n:
+            break
+        start = max(end - overlap, start + 1)
+    return chunks
+
+def _rag_build_index(max_docs: int = RAG_MAX_DOCS, chunk_size: int = RAG_CHUNK_SIZE, overlap: int = RAG_CHUNK_OVERLAP) -> int:
+    """Build embeddings-based RAG index from dataset_clean.csv. Returns number of chunks indexed."""
+    global rag_texts, rag_index
+    key = os.getenv("OPENAI_API_KEY") or os.getenv("OpenAI")
+    if not key:
+        raise RuntimeError("Missing OPENAI_API_KEY")
+    if not os.path.exists(DATASET_CSV):
+        raise RuntimeError("dataset_clean.csv not found")
+
+    client = OpenAI(api_key=key)
+    all_docs = read_texts_from_csv(DATASET_CSV)
+    if max_docs and len(all_docs) > max_docs:
+        all_docs = all_docs[:max_docs]
+
+    chunks: List[str] = []
+    for doc in all_docs:
+        chunks.extend(_chunk_text(doc, chunk_size, overlap))
+
+    # Batch embed
+    batch_size = 100
+    vectors: List[List[float]] = []
+    for i in range(0, len(chunks), batch_size):
+        batch = chunks[i:i+batch_size]
+        resp = client.embeddings.create(model=EMBED_MODEL, input=batch)
+        vectors.extend([d.embedding for d in resp.data])
+
+    E = np.asarray(vectors, dtype=np.float32)
+    norms = np.linalg.norm(E, axis=1, keepdims=True) + 1e-8
+    E = E / norms
+    rag_index = E
+    rag_texts = chunks
+    logger.info(f"RAG index built with {E.shape[0]} chunks, dim {E.shape[1]}")
+    return E.shape[0]
+
 @app.post("/rag", response_model=RagAnswer)
 async def rag_answer(payload: RagQuery):
-    """使用 OpenAI 对 `dataset_clean.csv` 构建的检索结果进行专业中文回答（带引用）。"""
-    if not os.getenv("OPENAI_API_KEY") and not os.getenv("OPENAI_API_KEY", os.getenv("OpenAI")):
-        raise HTTPException(status_code=400, detail="Missing OPENAI_API_KEY in environment")
-
-    # Allow key from .env OpenAI=... format
+    """使用 OpenAI 嵌入进行检索，输出中文专业回答与引用。"""
     key = os.getenv("OPENAI_API_KEY") or os.getenv("OpenAI")
+    if not key:
+        raise HTTPException(status_code=400, detail="Missing OPENAI_API_KEY in environment")
     client = OpenAI(api_key=key)
+
+    # Build index lazily if missing
+    if rag_index is None or not rag_texts:
+        try:
+            _rag_build_index()
+        except Exception as be:
+            raise HTTPException(status_code=500, detail=f"RAG index not available: {be}")
 
     indices = _rag_retrieve(payload.question, payload.k)
     context_snippets = []
     for i in indices:
         try:
             text = rag_texts[i]
-            snippet = text[:500]
+            snippet = text[:600]
             context_snippets.append({"id": str(i), "text": snippet})
         except Exception:
             continue
 
+    if not context_snippets:
+        raise HTTPException(status_code=404, detail="未检索到相关片段")
+
     system_prompt = (
-        "你是中国法律助手。请使用提供的语料片段作答，确保：\n"
-        "- 语言：正式、专业、简洁，使用中文。\n"
-        "- 结构：给出结论、理由、及引用片段ID列表。\n"
-        "- 若无法从片段中支持结论，请明确说明证据不足。"
+        "你是中国法律助手。请严格依据下列片段回答：\n"
+        "- 语言：正式、专业、简洁。\n"
+        "- 结构：先结论，后理由，最后列出引用片段ID。\n"
+        "- 若片段不能支撑答案，请明确说明证据不足并建议进一步检索方向。"
     )
     user_prompt = (
         f"问题：{payload.question}\n\n"
-        f"片段：\n" + "\n\n".join([f"[ID {c['id']}] {c['text']}" for c in context_snippets])
+        f"片段（按相似度排序）：\n" + "\n\n".join([f"[ID {c['id']}] {c['text']}" for c in context_snippets])
     )
 
     try:
@@ -424,8 +449,18 @@ async def rag_answer(payload: RagQuery):
 
     return RagAnswer(
         answer=answer_text,
-        sources=[{"id": c["id"], "preview": c["text"]} for c in context_snippets]
+        sources=[{"id": c["id"], "preview": c["text"]} for c in context_snippets],
+        retrieved=len(context_snippets),
     )
+
+@app.post("/rag/rebuild", response_model=dict)
+async def rag_rebuild():
+    """重建 RAG 索引。"""
+    try:
+        n = _rag_build_index()
+        return {"status": "ok", "chunks": int(n), "model": EMBED_MODEL}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/model-info", response_model=dict)
 async def get_model_info():
