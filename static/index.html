@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>中国法律RAG智能助手 | Chinese Legal RAG AI Assistant</title>
+    <title>中国法律文本助手 | Chinese Legal Text Assistant</title>
     <meta name="theme-color" content="#0f172a" />
     <link rel="stylesheet" href="/static/style.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -18,8 +18,8 @@
             <div class="header-content">
                 <div class="logo">
                     <i class="fas fa-balance-scale"></i>
-                    <h1>中国法律RAG智能助手</h1>
-                    <span class="subtitle">Chinese Legal RAG AI Assistant</span>
+                    <h1>中国法律文本助手</h1>
+                    <span class="subtitle">Chinese Legal Text Assistant</span>
                 </div>
                 <div class="status-indicator">
                     <div class="status-dot" id="statusDot"></div>
@@ -40,8 +40,8 @@
                     <div class="welcome-icon">
                         <i class="fas fa-gavel"></i>
                     </div>
-                    <h2>欢迎使用中国法律RAG智能助手</h2>
-                    <p>我是基于RNN模型训练的中国法律文本生成AI助手。您可以向我咨询法律问题，我会基于训练数据为您提供相关的法律分析和建议。</p>
+                    <h2>欢迎使用中国法律文本助手</h2>
+                    <p>本助手基于序列模型（RNN/GRU/LSTM）生成中文法律相关文本，力求表达清晰、专业与简洁。</p>
                     <div class="sample-questions">
                         <h3>示例问题：</h3>
                         <div class="sample-buttons">
@@ -57,9 +57,9 @@
                                 <i class="fas fa-handshake"></i>
                                 认罪态度影响
                             </button>
-                            <button class="sample-btn" onclick="askSample('你对此案的法律意见或推荐的处理结果是什么')">
+                            <button class="sample-btn" onclick="askSample('请基于既有语料生成简要法律分析建议')">
                                 <i class="fas fa-lightbulb"></i>
-                                法律意见建议
+                                法律分析建议
                             </button>
                         </div>
                     </div>
@@ -89,6 +89,7 @@
                         <i class="fas fa-microchip"></i>
                         <span id="modelInfo">模型加载中...</span>
                     </div>
+                    
                     <div class="settings">
                         <button class="settings-btn" onclick="toggleSettings()">
                             <i class="fas fa-cog"></i>

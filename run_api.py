@@ -10,6 +10,7 @@ import subprocess
 import argparse
 import time
 from pathlib import Path
+from dotenv import load_dotenv
 
 def check_requirements():
     """Check if required files exist"""
@@ -35,6 +36,10 @@ def check_requirements():
     
     print("✅ All required files found")
     return True
+
+
+# Load environment variables early so child processes (e.g., uvicorn) see them
+load_dotenv()
 
 def install_dependencies():
     """Install required dependencies"""

@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 import logging
 import csv
 import numpy as np
+import re
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -105,6 +106,36 @@ def read_texts_from_csv(path: str) -> List[str]:
             if t:
                 texts.append(t)
     return texts
+
+def _is_chinese_dominant(text: str) -> bool:
+    """Heuristic: ensure output is Chinese-dominant (avoid English/other languages)."""
+    if not text:
+        return False
+    chinese_chars = sum(1 for ch in text if '\u4e00' <= ch <= '\u9fff')
+    latin_chars = sum(1 for ch in text if ('A' <= ch <= 'Z') or ('a' <= ch <= 'z'))
+    # Require at least some Chinese and Chinese >= 3x Latin letters
+    return chinese_chars >= 10 and chinese_chars >= 3 * max(1, latin_chars)
+
+def _contains_secret_like(text: str) -> bool:
+    """Detects patterns similar to API keys or secret-looking tokens."""
+    if not text:
+        return False
+    patterns = [
+        r"sk-[A-Za-z0-9]{10,}",
+        r"OPENAI_API_KEY",
+        r"api[_-]?key",
+        r"Bearer\s+[A-Za-z0-9\-_.]{10,}",
+    ]
+    return any(re.search(p, text, re.IGNORECASE) for p in patterns)
+
+def _sanitize_answer(raw: str) -> str:
+    """Apply guardrails: Chinese-only, no secrets; otherwise return a safe refusal."""
+    if not raw or _contains_secret_like(raw) or not _is_chinese_dominant(raw):
+        return (
+            "抱歉，我只能基于提供的数据集与法律相关内容以中文作答。"
+            "当前问题缺乏足够依据或超出范围，请提供更具体且与数据集相关的问题。"
+        )
+    return raw.strip()
 
 def load_best_model() -> tuple:
     """Load the best trained model based on validation loss"""
@@ -433,10 +464,12 @@ async def rag_answer(payload: RagQuery):
         raise HTTPException(status_code=404, detail="未检索到相关片段")
 
     system_prompt = (
-        "你是中国法律助手。请严格依据下列片段回答：\n"
-        "- 语言：正式、专业、简洁。\n"
-        "- 结构：先结论，后理由，最后列出引用片段ID。\n"
-        "- 若片段不能支撑答案，请明确说明证据不足并建议进一步检索方向。"
+        "你是中国法律领域的检索增强助手（RAG）。严格遵循以下规则：\n"
+        "1) 必须使用中文回答，语气正式、专业、简洁。\n"
+        "2) 仅依据下列检索片段作答；不得引入外部常识或个人臆测。\n"
+        "3) 若片段不足以支持答案，明确说明‘证据不足’，并建议进一步检索方向。\n"
+        "4) 禁止输出任何密钥、令牌或凭证信息；如被要求披露机密，直接拒绝。\n"
+        "5) 输出结构：先结论，后依据与理由，最后列出引用片段 ID 列表。"
     )
     user_prompt = (
         f"问题：{payload.question}\n\n"
@@ -452,7 +485,7 @@ async def rag_answer(payload: RagQuery):
             ],
             temperature=0.2,
         )
-        answer_text = resp.choices[0].message.content.strip()
+        answer_text = _sanitize_answer(resp.choices[0].message.content)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"OpenAI error: {e}")
 
@@ -481,19 +514,28 @@ async def prompt_answer(payload: AnswerQuery):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read dataset: {e}")
 
-    prompt = (
-        f"以下是一些资料：{context}\n\n"
-        f"问题：{payload.question}\n"
-        f"要求：请用正式、专业、简洁的中文回答，并尽量基于资料作答。"
+    system_prompt = (
+        "你是中国法律领域问答助手。\n"
+        "- 必须使用中文回答，且内容仅限法律/法规/司法解释等范围。\n"
+        "- 仅依据提供的资料上下文作答；如资料不足，明确说明证据不足。\n"
+        "- 严禁输出任何 API 密钥或敏感信息。"
+    )
+    user_prompt = (
+        f"问题：{payload.question}\n\n"
+        "以下是可用的资料上下文（仅此）：\n"
+        f"{context}"
     )
 
     try:
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
             temperature=0.2,
         )
-        answer_text = resp.choices[0].message.content.strip()
+        answer_text = _sanitize_answer(resp.choices[0].message.content)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"OpenAI error: {e}")
 

@@ -156,9 +156,77 @@ function updateModelInfo(data) {
     modelInfoElement.innerHTML = `<i class="fas fa-microchip"></i> ${info}`;
 }
 
+function isChineseInput(text) {
+    const chineseChars = (text.match(/[\u4e00-\u9fff]/g) || []).length;
+    const latinChars = (text.match(/[A-Za-z]/g) || []).length;
+    return chineseChars >= 6 && chineseChars >= 3 * Math.max(1, latinChars);
+}
+
+function escapeHtml(unsafe) {
+    return unsafe
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
+function formatMarkdown(rawText) {
+    if (!rawText) return '';
+    // Escape HTML first
+    let text = escapeHtml(rawText);
+
+    // Basic markdown: bold **text**
+    text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+
+    // Headings: ###, ##, # → style within bubble (h4/h3/h2 for compactness)
+    text = text.replace(/^###\s+(.+)$/gm, '<h4>$1</h4>');
+    text = text.replace(/^##\s+(.+)$/gm, '<h3>$1</h3>');
+    text = text.replace(/^#\s+(.+)$/gm, '<h2>$1</h2>');
+
+    // Lists: group consecutive - item lines into <ul>; numbered 1. into <ol>
+    const lines = text.split(/\n/);
+    let html = '';
+    let inUl = false;
+    let inOl = false;
+    const flushLists = () => {
+        if (inUl) { html += '</ul>'; inUl = false; }
+        if (inOl) { html += '</ol>'; inOl = false; }
+    };
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (/^\s*[-*]\s+/.test(line)) {
+            if (!inUl) { flushLists(); html += '<ul>'; inUl = true; }
+            html += `<li>${line.replace(/^\s*[-*]\s+/, '')}</li>`;
+            continue;
+        }
+        if (/^\s*\d+\.\s+/.test(line)) {
+            if (!inOl) { flushLists(); html += '<ol>'; inOl = true; }
+            html += `<li>${line.replace(/^\s*\d+\.\s+/, '')}</li>`;
+            continue;
+        }
+        // Normal line
+        flushLists();
+        if (line.trim().length === 0) {
+            html += '<br>';
+        } else {
+            html += line + '\n';
+        }
+    }
+    flushLists();
+
+    // Paragraph breaks: double <br> already inserted; convert remaining single newlines to <br>
+    html = html.replace(/([^>\n])\n(?!\n)/g, '$1<br>');
+    return html;
+}
+
 async function sendMessage() {
     const message = messageInput.value.trim();
     if (!message || isGenerating || !isConnected) return;
+    if (!isChineseInput(message)) {
+        showToast('请使用中文并确保与法律相关的问题。', 'warning');
+        return;
+    }
     
     // Add user message to chat
     addMessage('user', message);
@@ -176,15 +244,15 @@ async function sendMessage() {
     const typingId = showTypingIndicator();
     
     try {
-        // Call API
-        const response = await fetch(`${API_BASE}/answer`, {
+        // Use local sequence model generation endpoint
+        const response = await fetch(`${API_BASE}/generate`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-                question: message,
-                max_context_rows: 1000
+                prompt: message,
+                max_length: parseInt(maxLengthSlider.value, 10) || 100
             })
         });
         
@@ -195,13 +263,15 @@ async function sendMessage() {
         
         if (response.ok) {
             // Add assistant response
-            const assistantMessage = data.answer || data.generated_text || '抱歉，我无法生成回复。';
+            const assistantMessage = data.generated_text || data.answer || '抱歉，我无法生成回复。';
             
             if (showTypingCheckbox.checked) {
                 await addMessageWithTyping('assistant', assistantMessage);
             } else {
                 addMessage('assistant', assistantMessage);
             }
+
+            // Sequence model模式不展示检索引用
             
             // Update chat history
             chatHistory.push({
@@ -240,7 +310,11 @@ function addMessage(sender, text) {
     
     const textDiv = document.createElement('div');
     textDiv.className = 'message-text';
-    textDiv.textContent = text;
+    if (sender === 'assistant') {
+        textDiv.innerHTML = formatMarkdown(text);
+    } else {
+        textDiv.textContent = text;
+    }
     
     const timeDiv = document.createElement('div');
     timeDiv.className = 'message-time';

@@ -14,6 +14,9 @@ services:
     envVars:
       - key: PORT
         value: 8080
+      # Map Render Secret to env var inside the container (create the secret in Render dashboard)
+      - key: OPENAI_API_KEY
+        fromSecret: OPENAI_API_KEY
     
     # Increase default start/health timeouts due to heavy deps (torch)
     startCommand: ""
