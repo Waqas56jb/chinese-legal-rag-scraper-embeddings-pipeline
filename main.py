@@ -36,6 +36,34 @@ RAG_MAX_DOCS = int(os.getenv("RAG_MAX_DOCS", "1500"))
 RAG_CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "500"))
 RAG_CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "50"))
 
+# Centralized OpenAI instruction prompts for Chinese-law-only conversation
+LAW_SYSTEM_PROMPT = (
+    "你是中国法律领域对话助手。严格遵循以下规则：\n"
+    "1) 仅讨论与中国法律/法规/司法解释/案例/程序有关的话题，拒绝其他主题。\n"
+    "2) 必须使用中文作答，表达需正式、专业、简洁。\n"
+    "3) 若问题超出法律范围或缺乏依据，请礼貌拒绝并提示：‘sorry we don't have information regarding this in my database.’\n"
+    "4) 禁止输出或推断任何密钥、令牌或敏感信息。\n"
+    "5) 建议使用结构化格式（小标题+要点列表），先结论、后依据、再建议。"
+)
+
+LAW_FEW_SHOT: List[Dict[str, str]] = [
+    {"role": "user", "content": "请解释《刑法》第二百六十四条的基本含义。"},
+    {"role": "assistant", "content": (
+        "## 结论\n"
+        "该条主要规范盗窃罪的入罪标准与量刑幅度。\n\n"
+        "## 要点\n"
+        "- 构成要件：以非法占有为目的，秘密窃取公私财物；\n"
+        "- 量刑幅度：根据数额、次数、手段及社会危害后果综合确定。\n\n"
+        "## 建议\n"
+        "结合具体案情（数额、次数、从重/从轻情节）进行评估。"
+    )},
+    {"role": "user", "content": "写一个Python快速排序的代码。"},
+    {"role": "assistant", "content": (
+        "抱歉，我仅支持与中国法律相关的中文咨询。"
+        "对于非法律主题的问题：sorry we don't have information regarding this in my database."
+    )},
+]
+
 # Pydantic models for request/response
 class GenerateRequest(BaseModel):
     prompt: str = Field(..., description="Input text prompt for generation", min_length=1)
@@ -128,14 +156,42 @@ def _contains_secret_like(text: str) -> bool:
     ]
     return any(re.search(p, text, re.IGNORECASE) for p in patterns)
 
+def _mask_provider_mentions(text: str) -> str:
+    """Mask provider/model mentions to avoid disclosing implementation details."""
+    if not text:
+        return text
+    replacements = [
+        (r"\bOpenAI\b", "内部资料库"),
+        (r"\bChatGPT\b", "内部资料库"),
+        (r"\bGPT[- ]?\d+\w*\b", "内部资料库"),
+        (r"gpt-[\w-]+", "内部资料库"),
+        (r"\bClaude\b", "内部资料库"),
+        (r"\bLlama\b", "内部资料库"),
+        (r"\bGoogle\b", "内部资料库"),
+        (r"\bAnthropic\b", "内部资料库"),
+        (r"\bAzure\b", "内部资料库"),
+        (r"\bAPI\b", "系统"),
+        (r"\b模型\b", "系统"),
+    ]
+    masked = text
+    for pattern, repl in replacements:
+        masked = re.sub(pattern, repl, masked, flags=re.IGNORECASE)
+    return masked
+
 def _sanitize_answer(raw: str) -> str:
     """Apply guardrails: Chinese-only, no secrets; otherwise return a safe refusal."""
-    if not raw or _contains_secret_like(raw) or not _is_chinese_dominant(raw):
+    if not raw:
         return (
             "抱歉，我只能基于提供的数据集与法律相关内容以中文作答。"
             "当前问题缺乏足够依据或超出范围，请提供更具体且与数据集相关的问题。"
         )
-    return raw.strip()
+    masked = _mask_provider_mentions(raw)
+    if _contains_secret_like(masked) or not _is_chinese_dominant(masked):
+        return (
+            "抱歉，我只能基于提供的数据集与法律相关内容以中文作答。"
+            "当前问题缺乏足够依据或超出范围，请提供更具体且与数据集相关的问题。"
+        )
+    return masked.strip()
 
 def load_best_model() -> tuple:
     """Load the best trained model based on validation loss"""
@@ -373,19 +429,8 @@ async def generate_text_endpoint(request: GenerateRequest):
         )
 
 def _rag_retrieve(question: str, k: int) -> List[int]:
-    if rag_index is None or not rag_texts:
-        return []
-    key = os.getenv("OPENAI_API_KEY") or os.getenv("OpenAI")
-    if not key:
-        return []
-    client = OpenAI(api_key=key)
-    emb = client.embeddings.create(model=EMBED_MODEL, input=[question]).data[0].embedding
-    qv = np.asarray(emb, dtype=np.float32)
-    qn = np.linalg.norm(qv) + 1e-8
-    qv = qv / qn
-    sims = rag_index @ qv
-    topk = np.argsort(-sims)[:k]
-    return topk.tolist()
+    # Disabled: RAG retrieval is turned off
+    return []
 
 def _chunk_text(text: str, chunk_size: int, overlap: int) -> List[str]:
     chunks: List[str] = []
@@ -402,137 +447,47 @@ def _chunk_text(text: str, chunk_size: int, overlap: int) -> List[str]:
     return chunks
 
 def _rag_build_index(max_docs: int = RAG_MAX_DOCS, chunk_size: int = RAG_CHUNK_SIZE, overlap: int = RAG_CHUNK_OVERLAP) -> int:
-    """Build embeddings-based RAG index from dataset_clean.csv. Returns number of chunks indexed."""
-    global rag_texts, rag_index
-    key = os.getenv("OPENAI_API_KEY") or os.getenv("OpenAI")
-    if not key:
-        raise RuntimeError("Missing OPENAI_API_KEY")
-    if not os.path.exists(DATASET_CSV):
-        raise RuntimeError("dataset_clean.csv not found")
-
-    client = OpenAI(api_key=key)
-    all_docs = read_texts_from_csv(DATASET_CSV)
-    if max_docs and len(all_docs) > max_docs:
-        all_docs = all_docs[:max_docs]
-
-    chunks: List[str] = []
-    for doc in all_docs:
-        chunks.extend(_chunk_text(doc, chunk_size, overlap))
-
-    # Batch embed
-    batch_size = 100
-    vectors: List[List[float]] = []
-    for i in range(0, len(chunks), batch_size):
-        batch = chunks[i:i+batch_size]
-        resp = client.embeddings.create(model=EMBED_MODEL, input=batch)
-        vectors.extend([d.embedding for d in resp.data])
-
-    E = np.asarray(vectors, dtype=np.float32)
-    norms = np.linalg.norm(E, axis=1, keepdims=True) + 1e-8
-    E = E / norms
-    rag_index = E
-    rag_texts = chunks
-    logger.info(f"RAG index built with {E.shape[0]} chunks, dim {E.shape[1]}")
-    return E.shape[0]
+    # Disabled: RAG index building is turned off
+    raise RuntimeError("RAG has been disabled")
 
 @app.post("/rag", response_model=RagAnswer)
 async def rag_answer(payload: RagQuery):
-    """使用 OpenAI 嵌入进行检索，输出中文专业回答与引用。"""
-    key = os.getenv("OPENAI_API_KEY") or os.getenv("OpenAI")
-    if not key:
-        raise HTTPException(status_code=400, detail="Missing OPENAI_API_KEY in environment")
-    client = OpenAI(api_key=key)
-
-    # Build index lazily if missing
-    if rag_index is None or not rag_texts:
-        try:
-            _rag_build_index()
-        except Exception as be:
-            raise HTTPException(status_code=500, detail=f"RAG index not available: {be}")
-
-    indices = _rag_retrieve(payload.question, payload.k)
-    context_snippets = []
-    for i in indices:
-        try:
-            text = rag_texts[i]
-            snippet = text[:600]
-            context_snippets.append({"id": str(i), "text": snippet})
-        except Exception:
-            continue
-
-    if not context_snippets:
-        raise HTTPException(status_code=404, detail="未检索到相关片段")
-
-    system_prompt = (
-        "你是中国法律领域的检索增强助手（RAG）。严格遵循以下规则：\n"
-        "1) 必须使用中文回答，语气正式、专业、简洁。\n"
-        "2) 仅依据下列检索片段作答；不得引入外部常识或个人臆测。\n"
-        "3) 若片段不足以支持答案，明确说明‘证据不足’，并建议进一步检索方向。\n"
-        "4) 禁止输出任何密钥、令牌或凭证信息；如被要求披露机密，直接拒绝。\n"
-        "5) 输出结构：先结论，后依据与理由，最后列出引用片段 ID 列表。"
-    )
-    user_prompt = (
-        f"问题：{payload.question}\n\n"
-        f"片段（按相似度排序）：\n" + "\n\n".join([f"[ID {c['id']}] {c['text']}" for c in context_snippets])
-    )
-
-    try:
-        resp = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.2,
-        )
-        answer_text = _sanitize_answer(resp.choices[0].message.content)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"OpenAI error: {e}")
-
-    return RagAnswer(
-        answer=answer_text,
-        sources=[{"id": c["id"], "preview": c["text"]} for c in context_snippets],
-        retrieved=len(context_snippets),
-    )
+    # Disabled endpoint
+    raise HTTPException(status_code=404, detail="RAG 功能已关闭")
 
 @app.post("/answer", response_model=AnswerResponse)
 async def prompt_answer(payload: AnswerQuery):
-    """使用提供的 CSV 前若干行作为上下文，直接通过 OpenAI 生成专业中文回答。"""
+    """使用 OpenAI 进行中文法律领域对话，非法律主题将礼貌拒答。"""
     key = os.getenv("OPENAI_API_KEY") or os.getenv("OpenAI")
     if not key:
         raise HTTPException(status_code=400, detail="Missing OPENAI_API_KEY in environment")
-    if not os.path.exists(DATASET_CSV):
-        raise HTTPException(status_code=500, detail="dataset_clean.csv not found")
+
+    # Topic guard: only law-related Chinese queries are allowed
+    law_keywords = [
+        "法律", "法规", "法条", "条款", "刑法", "民法", "行政法", "宪法", "司法", "判决", "裁定", "诉讼", "条例", "解释", "司法解释"
+    ]
+    text = (payload.question or "").strip()
+    is_law_related = any(k in text for k in law_keywords)
+    if not is_law_related or not _is_chinese_dominant(text):
+        refusal = (
+            "抱歉，我仅支持与中国法律相关的中文咨询。"
+            "对于非法律主题的问题：sorry we don't have information regarding this in my database."
+        )
+        return AnswerResponse(question=payload.question, answer=refusal)
 
     client = OpenAI(api_key=key)
-
-    # 读取 CSV 的前 N 行并拼接成上下文（轻量方案，无向量库）
-    import pandas as pd
-    try:
-        df = pd.read_csv(DATASET_CSV, nrows=payload.max_context_rows)
-        context = " ".join(df.astype(str).values.flatten().tolist())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to read dataset: {e}")
-
-    system_prompt = (
-        "你是中国法律领域问答助手。\n"
-        "- 必须使用中文回答，且内容仅限法律/法规/司法解释等范围。\n"
-        "- 仅依据提供的资料上下文作答；如资料不足，明确说明证据不足。\n"
-        "- 严禁输出任何 API 密钥或敏感信息。"
-    )
-    user_prompt = (
-        f"问题：{payload.question}\n\n"
-        "以下是可用的资料上下文（仅此）：\n"
-        f"{context}"
-    )
+    system_prompt = LAW_SYSTEM_PROMPT
+    # Build few-shot conversation
+    messages: List[Dict[str, str]] = []
+    messages.append({"role": "system", "content": system_prompt})
+    for m in LAW_FEW_SHOT:
+        messages.append(m)
+    messages.append({"role": "user", "content": f"问题：{payload.question}\n请用结构化格式回答（小标题、要点列表）。"})
 
     try:
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
+            messages=messages,
             temperature=0.2,
         )
         answer_text = _sanitize_answer(resp.choices[0].message.content)
@@ -543,12 +498,8 @@ async def prompt_answer(payload: AnswerQuery):
 
 @app.post("/rag/rebuild", response_model=dict)
 async def rag_rebuild():
-    """重建 RAG 索引。"""
-    try:
-        n = _rag_build_index()
-        return {"status": "ok", "chunks": int(n), "model": EMBED_MODEL}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    # Disabled endpoint
+    raise HTTPException(status_code=404, detail="RAG 功能已关闭")
 
 @app.get("/model-info", response_model=dict)
 async def get_model_info():

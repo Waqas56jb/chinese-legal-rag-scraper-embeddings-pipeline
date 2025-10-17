@@ -244,15 +244,15 @@ async function sendMessage() {
     const typingId = showTypingIndicator();
     
     try {
-        // Use local sequence model generation endpoint
-        const response = await fetch(`${API_BASE}/generate`, {
+        // Use OpenAI-backed legal Q&A endpoint (masked, Chinese-only)
+        const response = await fetch(`${API_BASE}/answer`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-                prompt: message,
-                max_length: parseInt(maxLengthSlider.value, 10) || 100
+                question: message,
+                max_context_rows: 1000
             })
         });
         
@@ -263,7 +263,7 @@ async function sendMessage() {
         
         if (response.ok) {
             // Add assistant response
-            const assistantMessage = data.generated_text || data.answer || '抱歉，我无法生成回复。';
+            const assistantMessage = data.answer || data.generated_text || '抱歉，我无法生成回复。';
             
             if (showTypingCheckbox.checked) {
                 await addMessageWithTyping('assistant', assistantMessage);
