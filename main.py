@@ -471,7 +471,7 @@ async def prompt_answer(payload: AnswerQuery):
     if not is_law_related or not _is_chinese_dominant(text):
         refusal = (
             "抱歉，我仅支持与中国法律相关的中文咨询。"
-            "对于非法律主题的问题：sorry we don't have information regarding this in my database."
+            "对于非法律主题的问题：很抱歉，我的数据库暂不包含该方面的信息。"
         )
         return AnswerResponse(question=payload.question, answer=refusal)
 

@@ -92,15 +92,19 @@ function initTheme() {
 }
 
 function toggleTheme() {
-    const isLight = document.body.classList.contains('theme-light');
-    setTheme(isLight ? 'dark' : 'light');
+    const mode = localStorage.getItem('chat_theme') || 'dark';
+    // Cycle: dark -> light -> black -> dark
+    const next = mode === 'dark' ? 'light' : mode === 'light' ? 'black' : 'dark';
+    setTheme(next);
 }
 
 function setTheme(theme) {
+    document.body.classList.remove('theme-light');
+    document.body.classList.remove('theme-black');
     if (theme === 'light') {
         document.body.classList.add('theme-light');
-    } else {
-        document.body.classList.remove('theme-light');
+    } else if (theme === 'black') {
+        document.body.classList.add('theme-black');
     }
     localStorage.setItem('chat_theme', theme);
 }
@@ -173,11 +177,28 @@ function escapeHtml(unsafe) {
 
 function formatMarkdown(rawText) {
     if (!rawText) return '';
-    // Escape HTML first
-    let text = escapeHtml(rawText);
+    // Normalize: ensure line breaks before headings and list items
+    let norm = rawText
+        // Put a newline before each level-2/3 heading tokens appearing inline
+        .replace(/\s*##\s+/g, '\n## ')
+        .replace(/\s*###\s+/g, '\n### ')
+        // Put a newline before list markers appearing inline
+        .replace(/\s+-\s+/g, '\n- ')
+        // Put a newline before numbered list like "1. " appearing inline
+        .replace(/\s+(\d+\.\s+)/g, '\n$1')
+        // Special: if a heading line contains trailing content, break after the heading
+        .replace(/^##\s*(结论)\s+/m, '## $1\n')
+        .replace(/^##\s*(要点)\s+/m, '## $1\n')
+        .replace(/^##\s*(建议)\s+/m, '## $1\n');
+
+    // Escape HTML next
+    let text = escapeHtml(norm);
 
     // Basic markdown: bold **text**
     text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+
+    // Convert lines that are just bold to headings (universal heading style)
+    text = text.replace(/^\s*<strong>(.+?)<\/strong>\s*$/gm, '<h3>$1</h3>');
 
     // Headings: ###, ##, # → style within bubble (h4/h3/h2 for compactness)
     text = text.replace(/^###\s+(.+)$/gm, '<h4>$1</h4>');
@@ -343,11 +364,15 @@ async function addMessageWithTyping(sender, text) {
     
     // Typing effect
     let currentText = '';
-    const typingSpeed = 30; // milliseconds per character
+    const typingSpeed = 20; // milliseconds per character
     
     for (let i = 0; i < text.length; i++) {
         currentText += text[i];
-        textDiv.textContent = currentText;
+        if (sender === 'assistant') {
+            textDiv.innerHTML = formatMarkdown(currentText);
+        } else {
+            textDiv.textContent = currentText;
+        }
         chatMessages.scrollTop = chatMessages.scrollHeight;
         await new Promise(resolve => setTimeout(resolve, typingSpeed));
     }

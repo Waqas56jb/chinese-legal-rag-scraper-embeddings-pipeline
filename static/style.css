@@ -38,6 +38,17 @@
     --text-muted: #94a3b8;
 }
 
+/* Black (AMOLED) theme overrides */
+.theme-black {
+    --background: #000000;
+    --surface: #0b0b0b;
+    --surface-hover: #111213;
+    --border: #1f2937;
+    --text-primary: #f5f7fb;
+    --text-secondary: #cbd5e1;
+    --text-muted: #94a3b8;
+}
+
 body {
     font-family: var(--font-sans);
     background: var(--background);
